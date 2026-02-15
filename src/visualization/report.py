@@ -376,6 +376,9 @@ class ExperimentReport:
         """
         print("生成HTML报告...")
 
+        # 计算从报告目录到figures目录的相对路径
+        figures_rel_path = os.path.relpath(self.figures_dir, self.output_dir)
+
         html_content = f"""
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -505,15 +508,15 @@ class ExperimentReport:
             </div>
         </div>
         <div class="figure-container">
-            <img src="../figures/data/class_distribution.png" alt="类别分布">
+            <img src="{figures_rel_path}/data/class_distribution.png" alt="类别分布">
             <p>图1: 攻击类型分布</p>
         </div>
         <div class="figure-container">
-            <img src="../figures/data/correlation_matrix.png" alt="相关性矩阵">
+            <img src="{figures_rel_path}/data/correlation_matrix.png" alt="相关性矩阵">
             <p>图2: 特征相关性矩阵</p>
         </div>
         <div class="figure-container">
-            <img src="../figures/data/data_quality.png" alt="数据质量">
+            <img src="{figures_rel_path}/data/data_quality.png" alt="数据质量">
             <p>图3: 数据质量报告</p>
         </div>
     </div>
@@ -541,7 +544,7 @@ class ExperimentReport:
             </div>
         </div>
         <div class="figure-container">
-            <img src="../figures/training/training_curves.png" alt="训练曲线">
+            <img src="{figures_rel_path}/training/training_curves.png" alt="训练曲线">
             <p>图4: 训练过程曲线</p>
         </div>
     </div>
@@ -573,11 +576,11 @@ class ExperimentReport:
             </div>
         </div>
         <div class="figure-container">
-            <img src="../figures/evaluation/confusion_matrix.png" alt="混淆矩阵">
+            <img src="{figures_rel_path}/evaluation/confusion_matrix.png" alt="混淆矩阵">
             <p>图5: 混淆矩阵</p>
         </div>
         <div class="figure-container">
-            <img src="../figures/evaluation/per_class_metrics.png" alt="各类别指标">
+            <img src="{figures_rel_path}/evaluation/per_class_metrics.png" alt="各类别指标">
             <p>图6: 各类别性能指标</p>
         </div>
     </div>
@@ -593,7 +596,7 @@ class ExperimentReport:
         <p>数据源: {', '.join(stats.get('source_names', []))}</p>
         <p>平均注意力权重: {[f'{w:.3f}' for w in stats.get('mean_weights', [])]}</p>
         <div class="figure-container">
-            <img src="../figures/attention/attention_weights.png" alt="注意力权重">
+            <img src="{figures_rel_path}/attention/attention_weights.png" alt="注意力权重">
             <p>图7: 注意力权重分布</p>
         </div>
     </div>
@@ -606,7 +609,7 @@ class ExperimentReport:
     <div class="section">
         <h2>📝 模型对比</h2>
         <div class="figure-container">
-            <img src="../figures/evaluation/model_comparison.png" alt="模型对比">
+            <img src="{figures_rel_path}/evaluation/model_comparison.png" alt="模型对比">
             <p>图8: 模型性能对比</p>
         </div>
     </div>

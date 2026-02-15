@@ -20,8 +20,14 @@ from sklearn.preprocessing import label_binarize
 import warnings
 warnings.filterwarnings('ignore')
 
-# 设置绘图风格
-plt.style.use('seaborn-v0_8-whitegrid')
+# 设置绘图风格（兼容不同版本的matplotlib）
+try:
+    plt.style.use('seaborn-v0_8-whitegrid')
+except OSError:
+    try:
+        plt.style.use('seaborn-whitegrid')
+    except OSError:
+        plt.style.use('ggplot')  # 通用fallback
 plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans', 'Arial Unicode MS']
 plt.rcParams['axes.unicode_minus'] = False
 plt.rcParams['figure.dpi'] = 100

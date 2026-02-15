@@ -143,11 +143,16 @@ class AsymmetricLoss(nn.Module):
 
     Paper: "Asymmetric Loss For Multi-Label Classification" (Ben-Baruch et al., 2020)
 
+    IMPORTANT: This loss function was originally designed for multi-label classification
+    and uses sigmoid activation. For standard multi-class (mutually exclusive) classification,
+    consider using FocalLoss instead, or set use_softmax=True.
+
     Args:
         gamma_neg: Focusing parameter for negative samples
         gamma_pos: Focusing parameter for positive samples
         clip: Clipping value for probability
         reduction: 'none', 'mean', or 'sum'
+        use_softmax: If True, use softmax for multi-class classification (default: False)
     """
 
     def __init__(
@@ -155,13 +160,15 @@ class AsymmetricLoss(nn.Module):
         gamma_neg: float = 4.0,
         gamma_pos: float = 1.0,
         clip: float = 0.05,
-        reduction: str = 'mean'
+        reduction: str = 'mean',
+        use_softmax: bool = False
     ):
         super().__init__()
         self.gamma_neg = gamma_neg
         self.gamma_pos = gamma_pos
         self.clip = clip
         self.reduction = reduction
+        self.use_softmax = use_softmax
 
     def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         """
@@ -177,8 +184,11 @@ class AsymmetricLoss(nn.Module):
         # 转换为 one-hot
         targets_one_hot = F.one_hot(targets, num_classes).float()
 
-        # 计算概率
-        p = torch.sigmoid(inputs)
+        # 计算概率 - 支持sigmoid(多标签)或softmax(多分类)
+        if self.use_softmax:
+            p = F.softmax(inputs, dim=-1)
+        else:
+            p = torch.sigmoid(inputs)
 
         # 正样本部分
         pos_part = targets_one_hot * torch.log(p.clamp(min=1e-8))
@@ -499,7 +509,8 @@ def create_loss_function(
     elif loss_type == 'asymmetric':
         return AsymmetricLoss(
             gamma_neg=kwargs.get('gamma_neg', 4.0),
-            gamma_pos=kwargs.get('gamma_pos', 1.0)
+            gamma_pos=kwargs.get('gamma_pos', 1.0),
+            use_softmax=kwargs.get('use_softmax', False)
         )
 
     elif loss_type == 'dice':

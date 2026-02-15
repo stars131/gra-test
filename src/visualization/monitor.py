@@ -254,7 +254,9 @@ class TrainingHistory:
 
     def save(self, path: str):
         """保存训练历史"""
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        dir_path = os.path.dirname(path)
+        if dir_path:  # 只有当目录路径非空时才创建
+            os.makedirs(dir_path, exist_ok=True)
         data = {
             'history': self.history,
             'summary': self.get_summary()
@@ -385,11 +387,11 @@ class EarlyStopping:
             self.counter = 0
             self.best_epoch = epoch
             if self.verbose:
-                print(f"  ✓ 验证指标改善: {score:.6f}")
+                print(f"  [OK] 验证指标改善: {score:.6f}")
         else:
             self.counter += 1
             if self.verbose:
-                print(f"  ✗ 验证指标未改善 ({self.counter}/{self.patience})")
+                print(f"  [--] 验证指标未改善 ({self.counter}/{self.patience})")
 
             if self.counter >= self.patience:
                 self.early_stop = True

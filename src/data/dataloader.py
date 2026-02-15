@@ -226,10 +226,10 @@ class CICIDS2017Preprocessor:
         for col in feature_cols:
             df[col] = pd.to_numeric(df[col], errors='coerce')
 
-        # 5. 处理无穷值
-        df = df.replace([np.inf, -np.inf], np.nan)
+        # 5. 处理无穷值 - 先计算再替换
         inf_count = df[feature_cols].isin([np.inf, -np.inf]).sum().sum()
         print(f"无穷值数量: {inf_count}")
+        df = df.replace([np.inf, -np.inf], np.nan)
 
         # 6. 处理缺失值
         missing_before = df[feature_cols].isnull().sum().sum()
@@ -629,6 +629,11 @@ class DataBalancer:
         """
         print(f"\n=== 数据平衡 (方法: {self.method}) ===")
         print(f"原始分布: {dict(zip(*np.unique(y, return_counts=True)))}")
+
+        # 检查imbalanced-learn是否可用
+        if not HAS_IMBLEARN:
+            print(f"警告: imbalanced-learn 未安装，无法使用数据平衡功能，返回原始数据")
+            return X, y
 
         if self.method == 'smote':
             sampler = SMOTE(

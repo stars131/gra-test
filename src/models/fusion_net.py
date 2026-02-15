@@ -45,7 +45,8 @@ class PositionalEncoding(nn.Module):
         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
         div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
         pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
+        # 处理d_model为奇数的情况：cos部分可能比sin少一个元素
+        pe[:, 1::2] = torch.cos(position * div_term[:pe[:, 1::2].shape[1]])
         pe = pe.unsqueeze(0)
         self.register_buffer('pe', pe)
 
@@ -112,7 +113,7 @@ class MultiHeadAttentionFusion(nn.Module):
             x: (batch, num_sources, dim)
         Returns:
             fused: (batch, dim)
-            attention_weights: (batch, num_heads, num_sources, num_sources)
+            attention_weights: (batch, num_sources, num_sources) - 多头平均后的注意力权重
         """
         batch_size, num_sources, dim = x.shape
 
@@ -220,7 +221,7 @@ class GatedFusion(nn.Module):
             x2: (batch, dim) - 源2特征
         Returns:
             fused: (batch, dim)
-            gate_values: (batch, dim) - 门控值
+            attention_weights: (batch, 2) - 两个源的权重
         """
         combined = torch.cat([x1, x2], dim=-1)
         gate_values = self.gate(combined)
@@ -228,7 +229,10 @@ class GatedFusion(nn.Module):
 
         fused = gate_values * x1 + (1 - gate_values) * x2 + transformed
 
-        return fused, gate_values.mean(dim=-1, keepdim=True)
+        # 返回两个源的权重：源1权重为gate均值，源2权重为1-gate均值
+        gate_mean = gate_values.mean(dim=-1, keepdim=True)
+        attention_weights = torch.cat([gate_mean, 1 - gate_mean], dim=-1)
+        return fused, attention_weights
 
 
 class BilinearFusion(nn.Module):
@@ -625,13 +629,27 @@ class FusionNet(nn.Module):
         # 融合
         if self.fusion_type == 'concat':
             fused = torch.cat([traffic_encoded, log_encoded], dim=-1)
-            attention_weights = torch.tensor([0.5, 0.5], device=traffic_features.device)
-            attention_weights = attention_weights.unsqueeze(0).expand(traffic_features.size(0), -1)
+            # concat融合没有学习的注意力权重，使用固定的等权重（无梯度是预期行为）
+            attention_weights = torch.ones(traffic_features.size(0), 2, device=traffic_features.device) * 0.5
         elif self.fusion_type in ['cross', 'gated', 'bilinear']:
             fused, attention_weights = self.fusion(traffic_encoded, log_encoded)
+            # 处理CrossAttentionFusion返回dict的情况，统一转换为tensor
+            if isinstance(attention_weights, dict):
+                attn_1_to_2 = attention_weights.get('attn_1_to_2')
+                attn_2_to_1 = attention_weights.get('attn_2_to_1')
+
+                if attn_1_to_2 is not None and attn_2_to_1 is not None:
+                    def _sample_mean(attn: torch.Tensor) -> torch.Tensor:
+                        return attn.reshape(attn.size(0), -1).mean(dim=1, keepdim=True)
+
+                    weight_1 = _sample_mean(attn_1_to_2)
+                    weight_2 = _sample_mean(attn_2_to_1)
+                    total = (weight_1 + weight_2).clamp_min(1e-8)
+                    attention_weights = torch.cat([weight_1 / total, weight_2 / total], dim=1)
+                else:
+                    attention_weights = torch.ones(traffic_features.size(0), 2, device=traffic_features.device) * 0.5
             if attention_weights is None:
-                attention_weights = torch.tensor([0.5, 0.5], device=traffic_features.device)
-                attention_weights = attention_weights.unsqueeze(0).expand(traffic_features.size(0), -1)
+                attention_weights = torch.ones(traffic_features.size(0), 2, device=traffic_features.device) * 0.5
         else:
             # attention, multi_head
             combined = torch.stack([traffic_encoded, log_encoded], dim=1)

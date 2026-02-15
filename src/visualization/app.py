@@ -82,8 +82,16 @@ def load_processed_data(data_path: str):
 def load_training_history(history_path: str):
     """加载训练历史"""
     try:
-        with open(history_path, 'rb') as f:
-            return pickle.load(f)
+        if history_path is None:
+            return None
+        if history_path.endswith('.pth'):
+            # 从 checkpoint 加载
+            import torch
+            checkpoint = torch.load(history_path, map_location='cpu')
+            return checkpoint.get('history', None)
+        else:
+            with open(history_path, 'rb') as f:
+                return pickle.load(f)
     except Exception as e:
         return None
 
@@ -92,8 +100,22 @@ def load_training_history(history_path: str):
 def load_model_results(results_path: str):
     """加载模型评估结果"""
     try:
+        if results_path is None:
+            return None
         with open(results_path, 'rb') as f:
-            return pickle.load(f)
+            data = pickle.load(f)
+            # 兼容不同格式的结果文件
+            if 'confusion_matrix' not in data and 'y_true' in data and 'y_pred' in data:
+                from sklearn.metrics import confusion_matrix
+                data['confusion_matrix'] = confusion_matrix(data['y_true'], data['y_pred'])
+            if 'metrics' not in data and 'test_metrics' in data:
+                data['metrics'] = {
+                    'accuracy': data.get('test_acc', 0),
+                    'precision': data['test_metrics'].get('precision', 0),
+                    'recall': data['test_metrics'].get('recall', 0),
+                    'f1_score': data['test_metrics'].get('f1', 0)
+                }
+            return data
     except Exception as e:
         return None
 
@@ -325,25 +347,66 @@ def main():
 
     # 侧边栏
     with st.sidebar:
-        st.image("https://img.icons8.com/color/96/000000/security-checked.png", width=80)
+        st.markdown("## 🛡️")  # 使用emoji替代外部图片，避免网络依赖
         st.title("控制面板")
 
         # 数据路径设置
         st.subheader("📁 数据配置")
-        data_dir = st.text_input("数据目录", value="data/processed")
+
+        # 自动检测数据目录
+        default_data_dir = os.path.join(project_root, "data/processed")
+        data_dir = st.text_input("数据目录", value=default_data_dir)
+
+        # 检查数据文件是否存在
         single_source_path = os.path.join(data_dir, "single_source_data.pkl")
         multi_source_path = os.path.join(data_dir, "multi_source_data.pkl")
+
+        if os.path.exists(single_source_path):
+            st.success("✅ 已找到数据文件")
+        else:
+            st.warning("⚠️ 数据文件不存在")
+            st.caption("请先运行: python quick_test.py")
 
         # 加载数据按钮
         load_data = st.button("🔄 加载数据", use_container_width=True)
 
         st.divider()
 
-        # 结果路径
-        st.subheader("📊 结果配置")
-        results_dir = st.text_input("结果目录", value="outputs/results")
-        history_path = os.path.join(results_dir, "training_history.pkl")
-        model_results_path = os.path.join(results_dir, "model_results.pkl")
+        # 结果路径 - 自动扫描实验目录
+        st.subheader("📊 实验结果")
+        outputs_dir = os.path.join(project_root, "outputs")
+
+        # 扫描实验目录
+        experiments = []
+        if os.path.exists(outputs_dir):
+            for d in os.listdir(outputs_dir):
+                exp_path = os.path.join(outputs_dir, d)
+                if os.path.isdir(exp_path) and (d.startswith('exp_') or d.startswith('kddcup_')):
+                    experiments.append(d)
+        experiments = sorted(experiments, reverse=True)
+
+        if experiments:
+            selected_exp = st.selectbox("选择实验", experiments)
+            results_dir = os.path.join(outputs_dir, selected_exp, "results")
+            checkpoint_dir = os.path.join(outputs_dir, selected_exp, "checkpoints")
+        else:
+            st.info("暂无实验结果")
+            results_dir = os.path.join(outputs_dir, "results")
+            checkpoint_dir = os.path.join(outputs_dir, "checkpoints")
+
+        # 查找训练历史和结果文件
+        history_path = None
+        model_results_path = None
+
+        # 从 checkpoint 中加载 history
+        best_model_path = os.path.join(checkpoint_dir, "best_model.pth") if 'checkpoint_dir' in dir() else None
+        if best_model_path and os.path.exists(best_model_path):
+            history_path = best_model_path  # history 存储在 checkpoint 中
+
+        # 查找测试结果
+        test_results_path = os.path.join(results_dir, "test_results.pkl") if 'results_dir' in dir() else None
+        if test_results_path and os.path.exists(test_results_path):
+            model_results_path = test_results_path
 
     # 主选项卡
     tab1, tab2, tab3, tab4, tab5 = st.tabs([

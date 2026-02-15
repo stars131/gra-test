@@ -1,0 +1,180 @@
+# ============================================
+# Windows 快速测试配置文件
+# ============================================
+
+# 项目信息
+project:
+  name: "network-attack-detection"
+  version: "0.1.0"
+  description: "基于多源数据融合的网络攻击检测系统"
+
+# ============================================
+# 数据配置
+# ============================================
+data:
+  # 数据路径 (Windows 格式)
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+  log_dir: "data/logs"
+
+  # 预处理选项
+  preprocessing:
+    binary_classification: false  # true: 二分类, false: 多分类
+    feature_selection: "all"  # all, variance, correlation
+    normalize: true
+
+  # 数据平衡
+  balance:
+    enabled: false
+    method: "smote"
+
+  # 数据划分
+  split:
+    test_size: 0.2
+    val_size: 0.1
+    stratify: true
+    random_state: 42
+
+  # 多源数据分割 (KDD Cup)
+  multi_source:
+    source1_groups: ["basic", "content"]  # 第一数据源：基本+内容特征
+    source2_groups: ["traffic", "host"]   # 第二数据源：流量+主机特征
+
+  # DataLoader配置
+  loader:
+    batch_size: 64
+    num_workers: 0  # Windows 建议设为 0
+    pin_memory: false
+    use_weighted_sampler: false
+    augment_train: false
+
+# ============================================
+# 模型配置
+# ============================================
+model:
+  # 模型类型
+  type: "fusion_net"
+
+  # 网络结构
+  architecture:
+    hidden_dim: 128
+    num_layers: 2
+    dropout: 0.3
+    activation: "relu"
+    encoder_type: "mlp"  # mlp, cnn, lstm, transformer
+
+  # 融合配置
+  fusion:
+    method: "attention"  # concat, attention, gated, multi_head, cross
+    attention_heads: 4
+
+  # 输入/输出维度（自动根据数据设置）
+  input_dim: null
+  source1_dim: null
+  source2_dim: null
+  num_classes: null
+
+# ============================================
+# 训练配置
+# ============================================
+training:
+  # 基本参数
+  epochs: 30
+  batch_size: 64
+
+  # 优化器
+  optimizer:
+    type: "adamw"
+    learning_rate: 0.001
+    weight_decay: 0.0001
+    betas: [0.9, 0.999]
+
+  # 学习率调度
+  scheduler:
+    type: "cosine"
+    warmup_epochs: 3
+    min_lr: 0.00001
+
+  # 早停
+  early_stopping:
+    enabled: true
+    patience: 10
+    min_delta: 0.001
+    monitor: "val_loss"
+
+  # 损失函数
+  loss:
+    type: "cross_entropy"
+    class_weights: null
+    label_smoothing: 0.0
+
+  # 梯度裁剪
+  gradient_clip:
+    enabled: true
+    max_norm: 1.0
+
+  # 混合精度训练 (Windows CPU 建议关闭)
+  mixed_precision: false
+
+  # 检查点
+  checkpoint:
+    save_best: true
+    save_last: true
+    save_every: 10
+
+# ============================================
+# 评估配置
+# ============================================
+evaluation:
+  metrics:
+    - accuracy
+    - precision
+    - recall
+    - f1_score
+    - confusion_matrix
+
+  eval_every: 1
+  per_class_metrics: true
+
+# ============================================
+# 实验配置
+# ============================================
+experiment:
+  name: null
+  seed: 42
+  deterministic: true
+  device: "auto"  # auto, cuda, cpu
+  multi_gpu: false
+
+# ============================================
+# 输出配置
+# ============================================
+output:
+  checkpoint_dir: "outputs/checkpoints"
+  results_dir: "outputs/results"
+  figures_dir: "outputs/figures"
+  logs_dir: "outputs/logs"
+
+# ============================================
+# 日志配置
+# ============================================
+logging:
+  level: "INFO"
+  tensorboard: true
+  wandb: false
+  log_every: 10
+
+# ============================================
+# 消融实验配置
+# ============================================
+ablation:
+  compare_sources:
+    enabled: false
+    sources: ["source1_only", "source2_only", "fusion"]
+
+  compare_fusion:
+    enabled: false
+    methods: ["concat", "attention", "gated"]
+
+  hyperparam_search:
+    enabled: false

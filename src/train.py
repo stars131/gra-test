@@ -18,7 +18,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from torch.optim.lr_scheduler import (
     CosineAnnealingLR, CosineAnnealingWarmRestarts,
     StepLR, ReduceLROnPlateau, OneCycleLR
@@ -114,6 +114,25 @@ class WarmupScheduler:
     def get_last_lr(self) -> List[float]:
         return [group['lr'] for group in self.optimizer.param_groups]
 
+    def state_dict(self) -> Dict[str, Any]:
+        return {
+            'current_epoch': self.current_epoch,
+            'warmup_epochs': self.warmup_epochs,
+            'warmup_start_lr': self.warmup_start_lr,
+            'base_lrs': self.base_lrs,
+            'base_scheduler_state_dict': self.base_scheduler.state_dict() if self.base_scheduler else None,
+        }
+
+    def load_state_dict(self, state_dict: Dict[str, Any]):
+        self.current_epoch = state_dict.get('current_epoch', self.current_epoch)
+        self.warmup_epochs = state_dict.get('warmup_epochs', self.warmup_epochs)
+        self.warmup_start_lr = state_dict.get('warmup_start_lr', self.warmup_start_lr)
+        self.base_lrs = state_dict.get('base_lrs', self.base_lrs)
+
+        base_state = state_dict.get('base_scheduler_state_dict')
+        if self.base_scheduler is not None and base_state is not None:
+            self.base_scheduler.load_state_dict(base_state)
+
 
 def create_scheduler(
     optimizer: optim.Optimizer,
@@ -127,7 +146,7 @@ def create_scheduler(
     if scheduler_type == 'cosine':
         base_scheduler = CosineAnnealingLR(
             optimizer,
-            T_max=epochs - warmup_epochs,
+            T_max=max(1, epochs - warmup_epochs),
             eta_min=kwargs.get('min_lr', 1e-6)
         )
     elif scheduler_type == 'cosine_warm_restarts':
@@ -212,7 +231,11 @@ class Trainer:
         train_config = config.get('training', {})
         self.epochs = train_config.get('epochs', 100)
         self.gradient_accumulation_steps = train_config.get('gradient_accumulation_steps', 1)
-        self.use_amp = train_config.get('mixed_precision', False)
+        requested_amp = train_config.get('mixed_precision', False)
+        self.amp_device_type = 'cuda' if self.device.type == 'cuda' else 'cpu'
+        self.use_amp = requested_amp and self.amp_device_type == 'cuda'
+        if requested_amp and not self.use_amp:
+            self.logger.warning("Mixed precision requested but CUDA is unavailable; AMP disabled.")
         self.max_grad_norm = train_config.get('gradient_clip', {}).get('max_norm', 1.0)
 
         # 早停配置
@@ -231,7 +254,7 @@ class Trainer:
         self._init_scheduler()
 
         # 混合精度
-        self.scaler = GradScaler() if self.use_amp else None
+        self.scaler = GradScaler(device='cuda') if self.use_amp else None
 
         # 训练状态
         self.current_epoch = 0
@@ -264,7 +287,10 @@ class Trainer:
         if class_weights == 'auto':
             # 从数据计算权重
             if hasattr(self.train_loader.dataset, 'labels'):
-                labels = self.train_loader.dataset.labels.numpy()
+                labels = self.train_loader.dataset.labels
+                # 处理可能在CUDA上的tensor
+                if isinstance(labels, torch.Tensor):
+                    labels = labels.cpu().numpy()
                 class_weights = get_class_weights(labels).tolist()
 
         self.criterion = create_loss_function(
@@ -272,6 +298,11 @@ class Trainer:
             num_classes=self.config.get('model', {}).get('num_classes', 2),
             class_weights=class_weights,
             gamma=loss_config.get('focal_gamma', 2.0),
+            gamma_neg=loss_config.get('gamma_neg', 4.0),
+            gamma_pos=loss_config.get('gamma_pos', 1.0),
+            use_softmax=loss_config.get('use_softmax', False),
+            smoothing=loss_config.get('smoothing', 0.1),
+            beta=loss_config.get('beta', 0.9999),
             label_smoothing=loss_config.get('label_smoothing', 0.0)
         )
         self.logger.info(f"Loss function: {loss_type}")
@@ -347,7 +378,7 @@ class Trainer:
                 labels = labels.to(self.device)
 
                 # 前向传播
-                with autocast(enabled=self.use_amp):
+                with autocast(device_type=self.amp_device_type, enabled=self.use_amp):
                     outputs, _ = self.model(source1, source2)
                     loss = self.criterion(outputs, labels)
                     loss = loss / self.gradient_accumulation_steps
@@ -357,7 +388,7 @@ class Trainer:
                 features = features.to(self.device)
                 labels = labels.to(self.device)
 
-                with autocast(enabled=self.use_amp):
+                with autocast(device_type=self.amp_device_type, enabled=self.use_amp):
                     outputs = self.model(features)
                     loss = self.criterion(outputs, labels)
                     loss = loss / self.gradient_accumulation_steps
@@ -387,6 +418,18 @@ class Trainer:
             total += labels.size(0)
             correct += predicted.eq(labels).sum().item()
 
+        # Handle trailing batches not reaching accumulation step
+        if len(self.train_loader) % self.gradient_accumulation_steps != 0:
+            if self.scaler is not None:
+                self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+                self.optimizer.step()
+            self.optimizer.zero_grad()
+
         avg_loss = total_loss / total
         accuracy = correct / total
 
@@ -404,33 +447,34 @@ class Trainer:
         all_labels = []
         all_probs = []
 
-        for batch in self.val_loader:
-            if len(batch) == 3:
-                source1, source2, labels = batch
-                source1 = source1.to(self.device)
-                source2 = source2.to(self.device)
-                labels = labels.to(self.device)
+        with torch.no_grad():
+            for batch in self.val_loader:
+                if len(batch) == 3:
+                    source1, source2, labels = batch
+                    source1 = source1.to(self.device)
+                    source2 = source2.to(self.device)
+                    labels = labels.to(self.device)
 
-                outputs, _ = self.model(source1, source2)
-            else:
-                features, labels = batch
-                features = features.to(self.device)
-                labels = labels.to(self.device)
+                    outputs, _ = self.model(source1, source2)
+                else:
+                    features, labels = batch
+                    features = features.to(self.device)
+                    labels = labels.to(self.device)
 
-                outputs = self.model(features)
+                    outputs = self.model(features)
 
-            loss = self.criterion(outputs, labels)
+                loss = self.criterion(outputs, labels)
 
-            total_loss += loss.item() * labels.size(0)
-            probs = torch.softmax(outputs, dim=1)
-            _, predicted = outputs.max(1)
+                total_loss += loss.item() * labels.size(0)
+                probs = torch.softmax(outputs, dim=1)
+                _, predicted = outputs.max(1)
 
-            total += labels.size(0)
-            correct += predicted.eq(labels).sum().item()
+                total += labels.size(0)
+                correct += predicted.eq(labels).sum().item()
 
-            all_preds.extend(predicted.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy())
-            all_probs.extend(probs.cpu().numpy())
+                all_preds.extend(predicted.cpu().numpy())
+                all_labels.extend(labels.cpu().numpy())
+                all_probs.extend(probs.cpu().numpy())
 
         avg_loss = total_loss / total
         accuracy = correct / total
@@ -571,6 +615,67 @@ class Trainer:
 
         self.logger.info(f"Loaded checkpoint from epoch {self.current_epoch}")
 
+    def evaluate(self, data_loader: DataLoader) -> Tuple[float, float, Dict]:
+        """
+        在指定数据加载器上评估模型
+
+        Args:
+            data_loader: 数据加载器（可以是val_loader或test_loader）
+
+        Returns:
+            (loss, accuracy, metrics)
+        """
+        self.model.eval()
+        total_loss = 0.0
+        correct = 0
+        total = 0
+
+        all_preds = []
+        all_labels = []
+        all_probs = []
+
+        with torch.no_grad():
+            for batch in data_loader:
+                if len(batch) == 3:
+                    source1, source2, labels = batch
+                    source1 = source1.to(self.device)
+                    source2 = source2.to(self.device)
+                    labels = labels.to(self.device)
+
+                    outputs, _ = self.model(source1, source2)
+                else:
+                    features, labels = batch
+                    features = features.to(self.device)
+                    labels = labels.to(self.device)
+
+                    outputs = self.model(features)
+
+                loss = self.criterion(outputs, labels)
+
+                total_loss += loss.item() * labels.size(0)
+                probs = torch.softmax(outputs, dim=1)
+                _, predicted = outputs.max(1)
+
+                total += labels.size(0)
+                correct += predicted.eq(labels).sum().item()
+
+                all_preds.extend(predicted.cpu().numpy())
+                all_labels.extend(labels.cpu().numpy())
+                all_probs.extend(probs.cpu().numpy())
+
+        avg_loss = total_loss / total
+        accuracy = correct / total
+
+        # 计算额外指标
+        from sklearn.metrics import precision_score, recall_score, f1_score
+        metrics = {
+            'precision': precision_score(all_labels, all_preds, average='weighted', zero_division=0),
+            'recall': recall_score(all_labels, all_preds, average='weighted', zero_division=0),
+            'f1': f1_score(all_labels, all_preds, average='weighted', zero_division=0)
+        }
+
+        return avg_loss, accuracy, metrics
+
 
 # ============================================
 # 消融实验
@@ -639,8 +744,8 @@ class AblationStudy:
 
         history = trainer.train()
 
-        # 测试
-        test_loss, test_acc, test_metrics = trainer.validate()
+        # 测试 - 使用test_loader评估而非val_loader
+        test_loss, test_acc, test_metrics = trainer.evaluate(self.test_loader)
 
         result = {
             'name': experiment_name,
