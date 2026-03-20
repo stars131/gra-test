@@ -5,6 +5,7 @@ Supports single-source and multi-source data loading.
 import torch
 from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 import numpy as np
+import re
 from typing import Dict, List, Optional, Tuple, Union
 
 
@@ -64,64 +65,90 @@ class MultiSourceDataset(Dataset):
 
     def __init__(
         self,
-        source1_features: np.ndarray,
-        source2_features: np.ndarray,
-        labels: np.ndarray,
+        source1_features: Union[np.ndarray, List[np.ndarray], Tuple[np.ndarray, ...]],
+        source2_or_labels: np.ndarray,
+        labels: Optional[np.ndarray] = None,
+        source_names: Optional[List[str]] = None,
         source1_name: str = "traffic",
         source2_name: str = "temporal",
         transform1: Optional[callable] = None,
-        transform2: Optional[callable] = None
+        transform2: Optional[callable] = None,
+        transforms: Optional[List[Optional[callable]]] = None
     ):
         """
         初始化多源数据集
 
         Args:
-            source1_features: 第一数据源特征 (N, D1)
-            source2_features: 第二数据源特征 (N, D2)
-            labels: 标签数组 (N,)
-            source1_name: 第一数据源名称
-            source2_name: 第二数据源名称
-            transform1: 第一数据源的转换函数
-            transform2: 第二数据源的转换函数
+            source1_features: 第一数据源特征，或全部数据源特征列表
+            source2_or_labels: 第二数据源特征 (旧接口) 或标签 (新接口)
+            labels: 标签数组 (旧接口)
+            source_names: 数据源名称列表
+            source1_name/source2_name: 兼容旧接口
+            transform1/transform2: 兼容旧接口
+            transforms: 各数据源的转换函数列表
         """
-        self.source1 = torch.FloatTensor(source1_features)
-        self.source2 = torch.FloatTensor(source2_features)
-        self.labels = torch.LongTensor(labels)
+        if isinstance(source1_features, (list, tuple)):
+            if not source1_features:
+                raise ValueError("至少需要一个数据源特征数组")
+            arrays = [torch.FloatTensor(features) for features in source1_features]
+            label_array = source2_or_labels
+        else:
+            if labels is None:
+                raise ValueError("旧接口至少需要 source1_features 和 source2_features")
+            arrays = [
+                torch.FloatTensor(source1_features),
+                torch.FloatTensor(source2_or_labels),
+            ]
+            label_array = labels
 
-        self.source1_name = source1_name
-        self.source2_name = source2_name
+        self.sources = arrays
+        self.labels = torch.LongTensor(label_array)
+        self.source_names = source_names or [source1_name, source2_name]
+        if len(self.source_names) != len(self.sources):
+            self.source_names = [f"source{i}" for i in range(1, len(self.sources) + 1)]
 
-        self.transform1 = transform1
-        self.transform2 = transform2
+        self.transforms = transforms or [transform1, transform2]
+        if len(self.transforms) != len(self.sources):
+            self.transforms = [
+                self.transforms[i] if i < len(self.transforms) else None
+                for i in range(len(self.sources))
+            ]
 
     def __len__(self) -> int:
         return len(self.labels)
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, ...]:
         """
         获取数据项
 
         Returns:
-            (source1_features, source2_features, label)
+            (*source_features, label)
         """
-        x1 = self.source1[idx]
-        x2 = self.source2[idx]
+        features = []
+        for source, transform in zip(self.sources, self.transforms):
+            tensor = source[idx]
+            if transform:
+                tensor = transform(tensor)
+            features.append(tensor)
         y = self.labels[idx]
 
-        if self.transform1:
-            x1 = self.transform1(x1)
-        if self.transform2:
-            x2 = self.transform2(x2)
-
-        return x1, x2, y
+        return (*features, y)
 
     @property
     def source1_dim(self) -> int:
-        return self.source1.shape[1]
+        return self.sources[0].shape[1]
 
     @property
     def source2_dim(self) -> int:
-        return self.source2.shape[1]
+        return self.sources[1].shape[1] if len(self.sources) > 1 else 0
+
+    @property
+    def source_dims(self) -> List[int]:
+        return [source.shape[1] for source in self.sources]
+
+    @property
+    def num_sources(self) -> int:
+        return len(self.sources)
 
     @property
     def num_classes(self) -> int:
@@ -288,25 +315,45 @@ def create_multi_source_loaders(
     Returns:
         包含train/val/test DataLoader的字典
     """
+    source_indices = sorted({
+        int(match.group(1))
+        for key in data_dict.keys()
+        for match in [re.match(r'^X(\d+)_train$', key)]
+        if match is not None
+    })
+
+    if source_indices and len(source_indices) < 2:
+        raise ValueError("至少需要两个数据源（X1_* 和 X2_*）")
+
+    if source_indices:
+        for idx in source_indices:
+            for split in ('train', 'val', 'test'):
+                key = f'X{idx}_{split}'
+                if key not in data_dict:
+                    raise KeyError(f"缺少数据键: {key}")
+
     # 训练数据增强
     train_transform = TrainingTransform(noise_std=0.01) if augment_train else None
 
+    source_indices = source_indices or [1, 2]
+    train_sources = [data_dict[f'X{idx}_train'] for idx in source_indices]
+    val_sources = [data_dict[f'X{idx}_val'] for idx in source_indices]
+    test_sources = [data_dict[f'X{idx}_test'] for idx in source_indices]
+    source_names = data_dict.get('source_names') or [f"source{idx}" for idx in source_indices]
+
     # 创建数据集
     train_dataset = MultiSourceDataset(
-        data_dict['X1_train'],
-        data_dict['X2_train'],
+        train_sources,
         data_dict['y_train'],
-        transform1=train_transform,
-        transform2=train_transform
+        source_names=source_names,
+        transforms=[train_transform] * len(train_sources),
     )
     val_dataset = MultiSourceDataset(
-        data_dict['X1_val'],
-        data_dict['X2_val'],
+        val_sources,
         data_dict['y_val']
     )
     test_dataset = MultiSourceDataset(
-        data_dict['X1_test'],
-        data_dict['X2_test'],
+        test_sources,
         data_dict['y_test']
     )
 
@@ -355,8 +402,9 @@ def create_multi_source_loaders(
     print(f"  训练集: {len(train_dataset)} 样本, {len(loaders['train'])} 批次")
     print(f"  验证集: {len(val_dataset)} 样本, {len(loaders['val'])} 批次")
     print(f"  测试集: {len(test_dataset)} 样本, {len(loaders['test'])} 批次")
-    print(f"  Source 1 维度: {train_dataset.source1_dim}")
-    print(f"  Source 2 维度: {train_dataset.source2_dim}")
+    print(f"  数据源数量: {train_dataset.num_sources}")
+    for idx, dim in enumerate(train_dataset.source_dims, start=1):
+        print(f"  Source {idx} 维度: {dim}")
 
     return loaders
 

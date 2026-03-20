@@ -1,6 +1,6 @@
 """
 Data loading and preprocessing module for network attack detection.
-Supports CIC-IDS-2017 dataset with multi-source data fusion.
+Supports CIC-IDS-2017 dataset with true multi-source data fusion.
 """
 import os
 import pandas as pd
@@ -22,6 +22,13 @@ except ImportError:
 
 import warnings
 warnings.filterwarnings('ignore')
+
+from src.data.enrichment import (
+    LogFeatureEnricher,
+    ThreatIntelEnricher,
+    extract_connection_metadata,
+    sample_dataframe,
+)
 
 
 class CICIDS2017Preprocessor:
@@ -85,6 +92,17 @@ class CICIDS2017Preprocessor:
         'Web Attack – Sql Injection': 'Web Attack',
         'Infiltration': 'Infiltration',
         'Heartbleed': 'Heartbleed'
+    }
+
+    EXCLUDED_FEATURE_COLUMNS = {
+        'Flow ID',
+        'Source IP',
+        'Src IP',
+        'Destination IP',
+        'Dst IP',
+        'Timestamp',
+        '__row_id__',
+        '__institution_source__',
     }
 
     def __init__(self, config: Dict = None):
@@ -210,7 +228,7 @@ class CICIDS2017Preprocessor:
         df = df.drop_duplicates()
         print(f"删除重复行: {original_shape[0] - df.shape[0]} 行")
 
-        # 3. 获取特征列（排除标签列）
+        # 3. 获取特征列（排除标签列和连接元数据）
         label_col = None
         for col in ['Label', ' Label', 'label']:
             if col in df.columns:
@@ -220,7 +238,10 @@ class CICIDS2017Preprocessor:
         if label_col is None:
             raise ValueError("找不到标签列")
 
-        feature_cols = [col for col in df.columns if col != label_col]
+        feature_cols = [
+            col for col in df.columns
+            if col != label_col and col not in self.EXCLUDED_FEATURE_COLUMNS
+        ]
 
         # 4. 转换为数值类型
         for col in feature_cols:
@@ -311,7 +332,10 @@ class CICIDS2017Preprocessor:
                 label_col = col
                 break
 
-        feature_cols = [col for col in df.columns if col != label_col]
+        feature_cols = [
+            col for col in df.columns
+            if col != label_col and col not in self.EXCLUDED_FEATURE_COLUMNS
+        ]
 
         if method == 'all':
             selected_features = feature_cols
@@ -369,7 +393,8 @@ class CICIDS2017Preprocessor:
         binary_classification: bool = False,
         feature_selection: str = 'correlation',
         normalize: bool = True,
-        save_path: Optional[str] = None
+        save_path: Optional[str] = None,
+        sample_size: Optional[int] = None
     ) -> Dict[str, np.ndarray]:
         """
         完整的预处理流程
@@ -396,51 +421,94 @@ class CICIDS2017Preprocessor:
         else:
             df = self.load_single_file(data_path)
 
-        # 2. 数据清洗
-        df = self.clean_data(df)
-
-        # 3. 获取标签列
-        label_col = None
-        for col in ['Label', ' Label', 'label']:
-            if col in df.columns:
-                label_col = col
-                break
-
-        # 4. 编码标签
-        y, class_names = self.encode_labels(df[label_col], binary=binary_classification)
-        print(f"\n类别分布:")
-        unique, counts = np.unique(y, return_counts=True)
-        for u, c in zip(unique, counts):
-            print(f"  {class_names[u]}: {c} ({c/len(y)*100:.2f}%)")
-
-        # 5. 特征选择
-        X_df, feature_names = self.select_features(df, method=feature_selection)
-        X = X_df.values.astype(np.float32)
-
-        # 6. 标准化
-        if normalize:
-            X = self.normalize_features(X)
-            print("已完成特征标准化")
-
-        result = {
-            'X': X,
-            'y': y,
-            'feature_names': feature_names,
-            'class_names': class_names,
-            'num_features': X.shape[1],
-            'num_classes': len(class_names)
-        }
+        result = self.preprocess_dataframe(
+            df=df,
+            binary_classification=binary_classification,
+            feature_selection=feature_selection,
+            normalize=normalize,
+            sample_size=sample_size
+        )
 
         # 7. 保存结果
         if save_path:
             self.save_preprocessed(result, save_path)
 
         print("\n预处理完成!")
-        print(f"特征维度: {X.shape[1]}")
-        print(f"样本数量: {X.shape[0]}")
-        print(f"类别数量: {len(class_names)}")
+        print(f"特征维度: {result['X'].shape[1]}")
+        print(f"样本数量: {result['X'].shape[0]}")
+        print(f"类别数量: {len(result['class_names'])}")
 
         return result
+
+    def preprocess_dataframe(
+        self,
+        df: pd.DataFrame,
+        binary_classification: bool = False,
+        feature_selection: str = 'correlation',
+        normalize: bool = True,
+        sample_size: Optional[int] = None
+    ) -> Dict[str, np.ndarray]:
+        """
+        直接对DataFrame执行预处理流程
+
+        Args:
+            df: 原始DataFrame
+            binary_classification: 是否二分类
+            feature_selection: 特征选择方法
+            normalize: 是否标准化
+
+        Returns:
+            包含特征和标签的字典
+        """
+        df = self.clean_column_names(df)
+
+        label_col = None
+        for col in ['Label', ' Label', 'label']:
+            if col in df.columns:
+                label_col = col
+                break
+
+        if sample_size:
+            df = sample_dataframe(df, sample_size=sample_size, random_state=42, label_column=label_col)
+
+        # 1. 数据清洗
+        df = self.clean_data(df)
+
+        # 2. 获取标签列与连接元数据
+        label_col = None
+        for col in ['Label', ' Label', 'label']:
+            if col in df.columns:
+                label_col = col
+                break
+
+        metadata = extract_connection_metadata(df)
+
+        # 3. 编码标签
+        y, class_names = self.encode_labels(df[label_col], binary=binary_classification)
+        print(f"\n类别分布:")
+        unique, counts = np.unique(y, return_counts=True)
+        for u, c in zip(unique, counts):
+            print(f"  {class_names[u]}: {c} ({c/len(y)*100:.2f}%)")
+
+        # 4. 特征选择
+        X_df, feature_names = self.select_features(df, method=feature_selection)
+        X = X_df.values.astype(np.float32)
+
+        # 5. 标准化
+        if normalize:
+            X = self.normalize_features(X)
+            print("已完成特征标准化")
+
+        return {
+            'X': X,
+            'y': y,
+            'feature_names': feature_names,
+            'class_names': class_names,
+            'num_features': X.shape[1],
+            'num_classes': len(class_names),
+            'metadata': metadata,
+            'clean_df': df.reset_index(drop=True),
+        }
 
     def save_preprocessed(self, data: Dict, path: str):
         """保存预处理后的数据"""
@@ -524,7 +592,9 @@ class MultiSourceDataSplitter:
             'Fwd Avg Bytes/Bulk', 'Fwd Avg Packets/Bulk',
             'Fwd Avg Bulk Rate', 'Bwd Avg Bytes/Bulk',
             'Bwd Avg Packets/Bulk', 'Bwd Avg Bulk Rate'
-        ]
+        ],
+        'log': list(LogFeatureEnricher.FEATURE_NAMES),
+        'threat_intel': list(ThreatIntelEnricher.FEATURE_NAMES),
     }
 
     def __init__(self, source1_groups: List[str] = None, source2_groups: List[str] = None):
@@ -737,18 +807,20 @@ class DataSplitter:
             'X_test': X_test, 'y_test': y_test
         }
 
-    def split_multi_source(
+    def split_multi_source_list(
         self,
-        X1: np.ndarray,
-        X2: np.ndarray,
+        sources: List[np.ndarray],
         y: np.ndarray,
         stratify: bool = True
     ) -> Dict[str, np.ndarray]:
-        """
-        同时划分多个数据源
+        """同时划分多个数据源，确保各数据源索引一致。"""
+        if len(sources) < 2:
+            raise ValueError("至少需要两个数据源")
 
-        确保各数据源的划分索引一致。
-        """
+        n_samples = len(y)
+        if any(src.shape[0] != n_samples for src in sources):
+            raise ValueError("所有数据源与标签样本数必须一致")
+
         n_samples = len(y)
         indices = np.arange(n_samples)
 
@@ -777,8 +849,26 @@ class DataSplitter:
         print(f"  验证集: {len(idx_val)} 样本")
         print(f"  测试集: {len(idx_test)} 样本")
 
-        return {
-            'X1_train': X1[idx_train], 'X1_val': X1[idx_val], 'X1_test': X1[idx_test],
-            'X2_train': X2[idx_train], 'X2_val': X2[idx_val], 'X2_test': X2[idx_test],
+        result = {
             'y_train': y_train, 'y_val': y_val, 'y_test': y_test
         }
+        for i, src in enumerate(sources, start=1):
+            result[f'X{i}_train'] = src[idx_train]
+            result[f'X{i}_val'] = src[idx_val]
+            result[f'X{i}_test'] = src[idx_test]
+
+        return result
+
+    def split_multi_source(
+        self,
+        X1: np.ndarray,
+        X2: np.ndarray,
+        y: np.ndarray,
+        stratify: bool = True
+    ) -> Dict[str, np.ndarray]:
+        """
+        同时划分多个数据源
+
+        确保各数据源的划分索引一致。
+        """
+        return self.split_multi_source_list([X1, X2], y, stratify=stratify)

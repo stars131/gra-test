@@ -73,20 +73,19 @@ class ComprehensiveEvaluator:
         all_attention = []
 
         for batch in data_loader:
-            if len(batch) == 3:
-                s1, s2, labels = batch
-                s1 = s1.to(self.device)
-                s2 = s2.to(self.device)
-                labels = labels.to(self.device)
+            if len(batch) < 2:
+                raise ValueError(f"不支持的批次格式: 期望至少2个元素，得到{len(batch)}个")
 
-                output = self.model(s1, s2)
-                if isinstance(output, tuple):
-                    logits, attention = output
-                else:
-                    logits = output
-                    attention = None
+            *features, labels = batch
+            features = [feature.to(self.device) for feature in features]
+            labels = labels.to(self.device)
+
+            output = self.model(*features) if len(features) > 1 else self.model(features[0])
+            if isinstance(output, tuple):
+                logits, attention = output
             else:
-                raise ValueError(f"不支持的批次格式: 期望3个元素，得到{len(batch)}个")
+                logits = output
+                attention = None
 
             probs = torch.softmax(logits, dim=1)
             _, preds = logits.max(1)
@@ -137,11 +136,13 @@ class ComprehensiveEvaluator:
         results['pr_data'] = self._compute_pr_data(y_true, y_proba)
 
         # 5. 混淆矩阵
-        results['confusion_matrix'] = confusion_matrix(y_true, y_pred).tolist()
+        labels = list(range(self.num_classes))
+        results['confusion_matrix'] = confusion_matrix(y_true, y_pred, labels=labels).tolist()
 
         # 6. 分类报告
         results['classification_report'] = classification_report(
             y_true, y_pred,
+            labels=labels,
             target_names=self.class_names,
             zero_division=0,
             output_dict=True
@@ -251,12 +252,16 @@ class ComprehensiveEvaluator:
         y_true_bin = label_binarize(y_true, classes=range(self.num_classes))
 
         try:
+            if len(np.unique(y_true)) < 2:
+                return roc_data
             for i, name in enumerate(self.class_names):
                 if self.num_classes == 2:
                     if i == 0:
                         continue
                     fpr, tpr, thresholds = roc_curve(y_true, y_proba[:, 1])
                 else:
+                    if len(np.unique(y_true_bin[:, i])) < 2:
+                        continue
                     fpr, tpr, thresholds = roc_curve(y_true_bin[:, i], y_proba[:, i])
 
                 roc_auc_val = float(auc(fpr, tpr))
@@ -278,12 +283,16 @@ class ComprehensiveEvaluator:
         y_true_bin = label_binarize(y_true, classes=range(self.num_classes))
 
         try:
+            if len(np.unique(y_true)) < 2:
+                return pr_data
             for i, name in enumerate(self.class_names):
                 if self.num_classes == 2:
                     if i == 0:
                         continue
                     prec, rec, thresholds = precision_recall_curve(y_true, y_proba[:, 1])
                 else:
+                    if y_true_bin[:, i].sum() == 0:
+                        continue
                     prec, rec, thresholds = precision_recall_curve(
                         y_true_bin[:, i], y_proba[:, i]
                     )

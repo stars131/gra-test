@@ -843,14 +843,18 @@ class AttentionVisualizer:
 
         fig, axes = plt.subplots(1, 3, figsize=(15, 5))
 
-        colors = [COLORS['primary'], COLORS['danger']]
+        colors = [
+            COLORS['primary'], COLORS['danger'], COLORS['secondary'],
+            COLORS['warning'], COLORS['info']
+        ]
+        plot_colors = [colors[i % len(colors)] for i in range(len(source_names))]
 
         # 1. 平均权重柱状图
         mean_weights = np.mean(attention_weights, axis=0)
         std_weights = np.std(attention_weights, axis=0)
 
         bars = axes[0].bar(source_names, mean_weights, yerr=std_weights,
-                          color=colors, edgecolor='white', capsize=5)
+                          color=plot_colors, edgecolor='white', capsize=5)
         axes[0].set_ylabel('平均注意力权重', fontsize=11)
         axes[0].set_title('各数据源平均权重', fontsize=12, fontweight='bold')
         for bar, val in zip(bars, mean_weights):
@@ -859,7 +863,7 @@ class AttentionVisualizer:
         axes[0].set_ylim(0, 1)
 
         # 2. 权重分布直方图
-        for i, (name, color) in enumerate(zip(source_names, colors)):
+        for i, (name, color) in enumerate(zip(source_names, plot_colors)):
             axes[1].hist(attention_weights[:, i], bins=50, alpha=0.7,
                         label=name, color=color, edgecolor='white')
         axes[1].set_xlabel('注意力权重', fontsize=11)

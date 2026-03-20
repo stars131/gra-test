@@ -1,0 +1,151 @@
+project:
+  name: "network-attack-detection-local-sample"
+  version: "0.1.0"
+  description: "本地小样本三源联调配置"
+
+data:
+  raw_dir: "data/raw/CIC-IDS-2017-local-sample"
+  processed_dir: "data/processed_local_sample"
+  log_dir: "data/logs"
+
+  institutional_sources: []
+
+  preprocessing:
+    binary_classification: false
+    feature_selection: "correlation"
+    normalize: true
+    sample_size: 3000
+
+  logs:
+    enabled: true
+    path: null
+    time_window_minutes: 5
+    generate_synthetic_if_missing: true
+    random_state: 42
+
+  threat_intel:
+    enabled: true
+    dir: "data/threat_intel"
+    feature_mapping: "data/threat_intel/threat_intel_features.json"
+
+  split:
+    test_size: 0.2
+    val_size: 0.1
+    stratify: true
+    random_state: 42
+
+  multi_source:
+    source1_groups: ["traffic", "temporal", "flags", "header", "bulk"]
+    source2_groups: ["log"]
+    extra_source_groups: [["threat_intel"]]
+
+  loader:
+    batch_size: 32
+    num_workers: 0
+    pin_memory: true
+    use_weighted_sampler: false
+    augment_train: false
+
+model:
+  type: "fusion_net"
+
+  architecture:
+    hidden_dim: 128
+    num_layers: 2
+    dropout: 0.2
+    activation: "relu"
+    encoder_type: "mlp"
+
+  fusion:
+    method: "attention"
+    attention_heads: 4
+
+  input_dim: null
+  source1_dim: null
+  source2_dim: null
+  num_classes: null
+
+training:
+  epochs: 3
+  batch_size: 32
+
+  optimizer:
+    type: "adamw"
+    learning_rate: 0.001
+    weight_decay: 0.0001
+    momentum: 0.9
+    betas: [0.9, 0.999]
+
+  scheduler:
+    type: "cosine"
+    warmup_epochs: 1
+    step_size: 10
+    gamma: 0.1
+    min_lr: 0.00001
+
+  early_stopping:
+    enabled: true
+    patience: 3
+    min_delta: 0.001
+    monitor: "val_loss"
+
+  loss:
+    type: "cross_entropy"
+    class_weights: null
+    focal_gamma: 2.0
+    label_smoothing: 0.0
+
+  gradient_clip:
+    enabled: true
+    max_norm: 1.0
+
+  mixed_precision: false
+
+  checkpoint:
+    save_best: true
+    save_last: true
+    save_every: 1
+
+evaluation:
+  metrics:
+    - accuracy
+    - precision
+    - recall
+    - f1_score
+    - auc_roc
+    - confusion_matrix
+  eval_every: 1
+  per_class_metrics: true
+
+experiment:
+  name: "local_sample"
+  seed: 42
+  deterministic: true
+  device: "auto"
+  multi_gpu: false
+
+output:
+  checkpoint_dir: "outputs/checkpoints"
+  results_dir: "outputs/results"
+  figures_dir: "outputs/figures"
+  logs_dir: "outputs/logs"
+
+logging:
+  level: "INFO"
+  tensorboard: false
+  wandb: false
+  log_every: 10
+
+ablation:
+  compare_sources:
+    enabled: false
+    sources: ["source1_only", "source2_only", "source3_only", "fusion_all"]
+  compare_fusion:
+    enabled: false
+    methods: ["concat", "attention", "gated"]
+  hyperparam_search:
+    enabled: false
+    hidden_dims: [128]
+    num_layers: [2]
+    dropouts: [0.2]
+    learning_rates: [0.001]

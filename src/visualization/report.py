@@ -298,7 +298,7 @@ class ExperimentReport:
         print("生成注意力分析报告...")
 
         if source_names is None:
-            source_names = ['流量+时序特征', '标志位+头部特征']
+            source_names = [f'数据源 {i + 1}' for i in range(attention_weights.shape[1])]
 
         figures = {}
 
@@ -684,8 +684,12 @@ def generate_full_report(
 
     # 加载训练历史
     if history_path and os.path.exists(history_path):
-        with open(history_path, 'rb') as f:
-            history_data = pickle.load(f)
+        if history_path.endswith('.pth'):
+            import torch
+            history_data = torch.load(history_path, map_location='cpu')
+        else:
+            with open(history_path, 'rb') as f:
+                history_data = pickle.load(f)
         report.add_training_results(history_data.get('history', history_data))
 
     # 加载评估结果
@@ -702,7 +706,8 @@ def generate_full_report(
             report.add_attention_analysis(
                 results['attention_weights'],
                 results['y_true'],
-                results['class_names']
+                results['class_names'],
+                results.get('source_names')
             )
 
     # 生成HTML报告

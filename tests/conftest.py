@@ -18,6 +18,7 @@ def sample_dims():
     return {
         'source1_dim': 22,
         'source2_dim': 19,
+        'source3_dim': 10,
         'num_classes': 5,
         'hidden_dim': 64,
         'batch_size': 16,
@@ -33,11 +34,13 @@ def sample_data(sample_dims):
     bs = sample_dims['batch_size']
     s1_dim = sample_dims['source1_dim']
     s2_dim = sample_dims['source2_dim']
+    s3_dim = sample_dims['source3_dim']
     n_cls = sample_dims['num_classes']
 
     return {
         'source1': torch.randn(bs, s1_dim),
         'source2': torch.randn(bs, s2_dim),
+        'source3': torch.randn(bs, s3_dim),
         'labels': torch.randint(0, n_cls, (bs,)),
     }
 

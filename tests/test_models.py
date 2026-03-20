@@ -37,6 +37,36 @@ class TestFusionNetEncoders:
         assert logits.shape == (sample_dims['batch_size'], sample_dims['num_classes'])
         assert attention.shape[0] == sample_dims['batch_size']
 
+    def test_three_source_forward(self, sample_data, sample_dims):
+        """测试真正三源输入前向传播"""
+        source_dims = [
+            sample_dims['source1_dim'],
+            sample_dims['source2_dim'],
+            sample_dims['source3_dim'],
+        ]
+        model = create_model(
+            model_type='fusion_net',
+            traffic_dim=source_dims[0],
+            log_dim=source_dims[1],
+            num_classes=sample_dims['num_classes'],
+            config={
+                'hidden_dim': sample_dims['hidden_dim'],
+                'dropout': 0.1,
+                'encoder_type': 'mlp',
+                'fusion_type': 'attention',
+                'num_layers': 2,
+                'num_heads': 4,
+                'source_dims': source_dims,
+            }
+        )
+        model.eval()
+
+        with torch.no_grad():
+            logits, attention = model(sample_data['source1'], sample_data['source2'], sample_data['source3'])
+
+        assert logits.shape == (sample_dims['batch_size'], sample_dims['num_classes'])
+        assert attention.shape == (sample_dims['batch_size'], 3)
+
 
 class TestFusionMethods:
     """测试不同融合方法"""
@@ -74,7 +104,6 @@ class TestSingleSourceNet:
 
     def test_forward(self, sample_data, sample_dims):
         """测试 SingleSourceNet 前向传播"""
-        total_dim = sample_dims['source1_dim'] + sample_dims['source2_dim']
         model = create_model(
             model_type='single_source',
             traffic_dim=sample_dims['source1_dim'],
@@ -101,21 +130,27 @@ class TestEnsembleFusionNet:
 
     def test_forward(self, sample_data, sample_dims):
         """测试 EnsembleFusionNet 前向传播"""
+        source_dims = [
+            sample_dims['source1_dim'],
+            sample_dims['source2_dim'],
+            sample_dims['source3_dim'],
+        ]
         model = create_model(
             model_type='ensemble',
-            traffic_dim=sample_dims['source1_dim'],
-            log_dim=sample_dims['source2_dim'],
+            traffic_dim=source_dims[0],
+            log_dim=source_dims[1],
             num_classes=sample_dims['num_classes'],
             config={
                 'hidden_dim': sample_dims['hidden_dim'],
                 'dropout': 0.1,
-                'fusion_types': ['attention', 'gated']
+                'fusion_types': ['attention', 'gated'],
+                'source_dims': source_dims,
             }
         )
         model.eval()
 
         with torch.no_grad():
-            logits, attention = model(sample_data['source1'], sample_data['source2'])
+            logits, attention = model(sample_data['source1'], sample_data['source2'], sample_data['source3'])
 
         assert logits.shape == (sample_dims['batch_size'], sample_dims['num_classes'])
 

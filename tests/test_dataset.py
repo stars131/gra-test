@@ -89,3 +89,30 @@ class TestMultiSourceLoaders:
         s1, s2, labels = batch
         assert s1.shape[1] == 20
         assert s2.shape[1] == 15
+
+    def test_create_loaders_with_extra_sources(self):
+        """测试超过两个数据源时会保留全部源"""
+        np.random.seed(42)
+        n_train, n_val, n_test = 120, 30, 30
+
+        data_dict = {
+            'X1_train': np.random.randn(n_train, 10).astype(np.float32),
+            'X1_val': np.random.randn(n_val, 10).astype(np.float32),
+            'X1_test': np.random.randn(n_test, 10).astype(np.float32),
+            'X2_train': np.random.randn(n_train, 8).astype(np.float32),
+            'X2_val': np.random.randn(n_val, 8).astype(np.float32),
+            'X2_test': np.random.randn(n_test, 8).astype(np.float32),
+            'X3_train': np.random.randn(n_train, 6).astype(np.float32),
+            'X3_val': np.random.randn(n_val, 6).astype(np.float32),
+            'X3_test': np.random.randn(n_test, 6).astype(np.float32),
+            'y_train': np.random.randint(0, 4, n_train),
+            'y_val': np.random.randint(0, 4, n_val),
+            'y_test': np.random.randint(0, 4, n_test),
+        }
+
+        loaders = create_multi_source_loaders(data_dict, batch_size=16, num_workers=0)
+        s1, s2, s3, labels = next(iter(loaders['train']))
+
+        assert s1.shape[1] == 10
+        assert s2.shape[1] == 8
+        assert s3.shape[1] == 6

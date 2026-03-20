@@ -262,6 +262,84 @@ class BilinearFusion(nn.Module):
         return fused, None
 
 
+class MultiSourceCrossAttentionFusion(nn.Module):
+    """多源自注意力融合模块。"""
+
+    def __init__(self, dim: int, num_heads: int = 4, dropout: float = 0.1):
+        super().__init__()
+        self.attention = nn.MultiheadAttention(dim, num_heads, dropout=dropout, batch_first=True)
+        self.norm1 = nn.LayerNorm(dim)
+        self.ffn = nn.Sequential(
+            nn.Linear(dim, dim * 4),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(dim * 4, dim)
+        )
+        self.norm2 = nn.LayerNorm(dim)
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        attended, attn_weights = self.attention(x, x, x, need_weights=True, average_attn_weights=False)
+        x = self.norm1(x + attended)
+        fused_sources = self.norm2(x + self.ffn(x))
+        fused = fused_sources.mean(dim=1)
+        return fused, attn_weights.mean(dim=1)
+
+
+class MultiSourceGatedFusion(nn.Module):
+    """多源门控融合模块。"""
+
+    def __init__(self, dim: int, dropout: float = 0.1):
+        super().__init__()
+        self.gate = nn.Sequential(
+            nn.Linear(dim, dim),
+            nn.LayerNorm(dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(dim, 1)
+        )
+        self.transform = nn.Sequential(
+            nn.Linear(dim, dim),
+            nn.LayerNorm(dim),
+            nn.GELU(),
+            nn.Dropout(dropout)
+        )
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        weights = F.softmax(self.gate(x).squeeze(-1), dim=1)
+        transformed = self.transform(x)
+        fused = (transformed * weights.unsqueeze(-1)).sum(dim=1)
+        return fused, weights
+
+
+class MultiSourceBilinearFusion(nn.Module):
+    """多源双线性交互融合模块。"""
+
+    def __init__(self, dim: int, dropout: float = 0.1):
+        super().__init__()
+        self.bilinear = nn.Bilinear(dim, dim, dim)
+        self.proj = nn.Sequential(
+            nn.LayerNorm(dim),
+            nn.GELU(),
+            nn.Dropout(dropout)
+        )
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        num_sources = x.size(1)
+        pairwise = []
+        for i in range(num_sources):
+            for j in range(i + 1, num_sources):
+                pairwise.append(self.bilinear(x[:, i], x[:, j]))
+
+        if pairwise:
+            pairwise_mean = torch.stack(pairwise, dim=1).mean(dim=1)
+            fused = self.proj(pairwise_mean + x.mean(dim=1))
+        else:
+            fused = self.proj(x[:, 0])
+
+        attention = torch.ones(x.size(0), num_sources, device=x.device) / num_sources
+        return fused, attention
+
+
 # ============================================
 # 特征编码器
 # ============================================
@@ -513,14 +591,15 @@ class FusionNet(nn.Module):
     def __init__(
         self,
         traffic_dim: int,
-        log_dim: int,
+        log_dim: Optional[int] = None,
         hidden_dim: int = 256,
         num_classes: int = 2,
         dropout: float = 0.3,
         encoder_type: str = 'mlp',
         fusion_type: str = 'attention',
         num_layers: int = 2,
-        num_heads: int = 4
+        num_heads: int = 4,
+        source_dims: Optional[List[int]] = None
     ):
         """
         Args:
@@ -533,12 +612,16 @@ class FusionNet(nn.Module):
             fusion_type: 融合类型 ('attention', 'multi_head', 'cross', 'gated', 'bilinear', 'concat')
             num_layers: 编码器层数
             num_heads: 注意力头数
+            source_dims: 数据源维度列表；提供后优先于 traffic_dim/log_dim
         """
         super().__init__()
 
         self.encoder_type = encoder_type
         self.fusion_type = fusion_type
         self.hidden_dim = hidden_dim
+        self.source_dims = source_dims or [traffic_dim] + ([log_dim] if log_dim is not None else [])
+        if len(self.source_dims) < 2:
+            raise ValueError("FusionNet 至少需要两个输入源")
 
         # 选择编码器
         EncoderClass = {
@@ -558,8 +641,10 @@ class FusionNet(nn.Module):
         if encoder_type == 'transformer':
             encoder_kwargs['num_heads'] = num_heads
 
-        self.traffic_encoder = EncoderClass(input_dim=traffic_dim, **encoder_kwargs)
-        self.log_encoder = EncoderClass(input_dim=log_dim, **encoder_kwargs)
+        self.encoders = nn.ModuleList([
+            EncoderClass(input_dim=input_dim, **encoder_kwargs)
+            for input_dim in self.source_dims
+        ])
 
         # 选择融合模块
         if fusion_type == 'attention':
@@ -569,17 +654,17 @@ class FusionNet(nn.Module):
             self.fusion = MultiHeadAttentionFusion(hidden_dim, num_heads, dropout)
             fusion_out_dim = hidden_dim
         elif fusion_type == 'cross':
-            self.fusion = CrossAttentionFusion(hidden_dim, num_heads, dropout)
+            self.fusion = MultiSourceCrossAttentionFusion(hidden_dim, num_heads, dropout)
             fusion_out_dim = hidden_dim
         elif fusion_type == 'gated':
-            self.fusion = GatedFusion(hidden_dim, dropout)
+            self.fusion = MultiSourceGatedFusion(hidden_dim, dropout)
             fusion_out_dim = hidden_dim
         elif fusion_type == 'bilinear':
-            self.fusion = BilinearFusion(hidden_dim, hidden_dim, hidden_dim, dropout)
+            self.fusion = MultiSourceBilinearFusion(hidden_dim, dropout)
             fusion_out_dim = hidden_dim
         elif fusion_type == 'concat':
             self.fusion = None
-            fusion_out_dim = hidden_dim * 2
+            fusion_out_dim = hidden_dim * len(self.source_dims)
         else:
             raise ValueError(f"Unknown fusion type: {fusion_type}")
 
@@ -612,52 +697,43 @@ class FusionNet(nn.Module):
 
     def forward(
         self,
-        traffic_features: torch.Tensor,
-        log_features: torch.Tensor
+        *source_features: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         前向传播
 
         Args:
-            traffic_features: 流量特征 (batch, traffic_dim)
-            log_features: 日志特征 (batch, log_dim)
+            source_features: 多个输入源，每个形状为 (batch, source_dim)
 
         Returns:
             logits: 分类logits (batch, num_classes)
             attention_weights: 注意力权重（形状取决于融合类型）
         """
-        # 编码
-        traffic_encoded = self.traffic_encoder(traffic_features)
-        log_encoded = self.log_encoder(log_features)
+        if len(source_features) != len(self.encoders):
+            raise ValueError(f"期望 {len(self.encoders)} 个数据源，实际收到 {len(source_features)} 个")
+
+        encoded_sources = [
+            encoder(features)
+            for encoder, features in zip(self.encoders, source_features)
+        ]
+        combined = torch.stack(encoded_sources, dim=1)
+        batch_size = source_features[0].size(0)
+        device = source_features[0].device
 
         # 融合
         if self.fusion_type == 'concat':
-            fused = torch.cat([traffic_encoded, log_encoded], dim=-1)
-            # concat融合没有学习的注意力权重，使用固定的等权重（无梯度是预期行为）
-            attention_weights = torch.ones(traffic_features.size(0), 2, device=traffic_features.device) * 0.5
+            fused = torch.cat(encoded_sources, dim=-1)
+            attention_weights = torch.ones(batch_size, len(self.source_dims), device=device) / len(self.source_dims)
         elif self.fusion_type in ['cross', 'gated', 'bilinear']:
-            fused, attention_weights = self.fusion(traffic_encoded, log_encoded)
-            # 处理CrossAttentionFusion返回dict的情况，统一转换为tensor
-            if isinstance(attention_weights, dict):
-                attn_1_to_2 = attention_weights.get('attn_1_to_2')
-                attn_2_to_1 = attention_weights.get('attn_2_to_1')
-
-                if attn_1_to_2 is not None and attn_2_to_1 is not None:
-                    def _sample_mean(attn: torch.Tensor) -> torch.Tensor:
-                        return attn.reshape(attn.size(0), -1).mean(dim=1, keepdim=True)
-
-                    weight_1 = _sample_mean(attn_1_to_2)
-                    weight_2 = _sample_mean(attn_2_to_1)
-                    total = (weight_1 + weight_2).clamp_min(1e-8)
-                    attention_weights = torch.cat([weight_1 / total, weight_2 / total], dim=1)
-                else:
-                    attention_weights = torch.ones(traffic_features.size(0), 2, device=traffic_features.device) * 0.5
-            if attention_weights is None:
-                attention_weights = torch.ones(traffic_features.size(0), 2, device=traffic_features.device) * 0.5
+            fused, attention_weights = self.fusion(combined)
         else:
             # attention, multi_head
-            combined = torch.stack([traffic_encoded, log_encoded], dim=1)
             fused, attention_weights = self.fusion(combined)
+
+        if attention_weights is None:
+            attention_weights = torch.ones(batch_size, len(self.source_dims), device=device) / len(self.source_dims)
+        elif attention_weights.dim() == 3:
+            attention_weights = attention_weights.mean(dim=1)
 
         # 分类
         logits = self.classifier(fused)
@@ -666,13 +742,12 @@ class FusionNet(nn.Module):
 
     def get_attention_weights(
         self,
-        traffic_features: torch.Tensor,
-        log_features: torch.Tensor
+        *source_features: torch.Tensor
     ) -> Dict[str, torch.Tensor]:
         """获取详细的注意力权重信息"""
         self.eval()
         with torch.no_grad():
-            _, attn = self.forward(traffic_features, log_features)
+            _, attn = self.forward(*source_features)
         return {'fusion_attention': attn}
 
 
@@ -727,11 +802,12 @@ class EnsembleFusionNet(nn.Module):
     def __init__(
         self,
         traffic_dim: int,
-        log_dim: int,
+        log_dim: Optional[int] = None,
         hidden_dim: int = 256,
         num_classes: int = 2,
         dropout: float = 0.3,
-        fusion_types: List[str] = ['attention', 'gated', 'cross']
+        fusion_types: List[str] = ['attention', 'gated', 'cross'],
+        source_dims: Optional[List[int]] = None
     ):
         super().__init__()
 
@@ -742,7 +818,8 @@ class EnsembleFusionNet(nn.Module):
                 hidden_dim=hidden_dim,
                 num_classes=num_classes,
                 dropout=dropout,
-                fusion_type=ft
+                fusion_type=ft,
+                source_dims=source_dims
             )
             for ft in fusion_types
         ])
@@ -752,14 +829,13 @@ class EnsembleFusionNet(nn.Module):
 
     def forward(
         self,
-        traffic_features: torch.Tensor,
-        log_features: torch.Tensor
+        *source_features: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         outputs = []
         attentions = []
 
         for model in self.models:
-            out, attn = model(traffic_features, log_features)
+            out, attn = model(*source_features)
             outputs.append(out)
             attentions.append(attn)
 
@@ -780,7 +856,7 @@ class EnsembleFusionNet(nn.Module):
 def create_model(
     model_type: str,
     traffic_dim: int,
-    log_dim: int,
+    log_dim: Optional[int],
     num_classes: int,
     config: Dict = None
 ) -> nn.Module:
@@ -799,6 +875,12 @@ def create_model(
     """
     config = config or {}
 
+    source_dims = config.get('source_dims')
+    if source_dims is None:
+        source_dims = [traffic_dim]
+        if log_dim is not None:
+            source_dims.append(log_dim)
+
     if model_type == 'fusion_net':
         return FusionNet(
             traffic_dim=traffic_dim,
@@ -809,11 +891,12 @@ def create_model(
             encoder_type=config.get('encoder_type', 'mlp'),
             fusion_type=config.get('fusion_type', 'attention'),
             num_layers=config.get('num_layers', 2),
-            num_heads=config.get('num_heads', 4)
+            num_heads=config.get('num_heads', 4),
+            source_dims=source_dims
         )
     elif model_type == 'single_source':
         return SingleSourceNet(
-            input_dim=traffic_dim + log_dim,
+            input_dim=config.get('input_dim', sum(source_dims)),
             num_classes=num_classes,
             hidden_dim=config.get('hidden_dim', 256),
             dropout=config.get('dropout', 0.3),
@@ -827,7 +910,8 @@ def create_model(
             num_classes=num_classes,
             hidden_dim=config.get('hidden_dim', 256),
             dropout=config.get('dropout', 0.3),
-            fusion_types=config.get('fusion_types', ['attention', 'gated', 'cross'])
+            fusion_types=config.get('fusion_types', ['attention', 'gated', 'cross']),
+            source_dims=source_dims
         )
     else:
         raise ValueError(f"Unknown model type: {model_type}")

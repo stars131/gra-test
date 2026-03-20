@@ -188,6 +188,42 @@ def create_scheduler(
     return base_scheduler
 
 
+def _split_batch(batch, device: torch.device):
+    """Unpack a batch where the last element is always the label tensor."""
+    if len(batch) < 2:
+        raise ValueError(f"Unsupported batch format: expected at least 2 elements, got {len(batch)}")
+
+    *features, labels = batch
+    labels = labels.to(device)
+    moved_features = [feature.to(device) for feature in features]
+    return moved_features, labels
+
+
+def _build_multi_source_dict(data: Dict[str, np.ndarray]) -> Tuple[Dict[str, np.ndarray], List[int], List[int]]:
+    source_indices = sorted(
+        int(key[1:].split('_')[0])
+        for key in data.keys()
+        if key.startswith('s') and key.endswith('_train') and key[1].isdigit()
+    )
+    if not source_indices:
+        source_indices = [1, 2]
+
+    data_dict = {
+        'y_train': data['y_train'],
+        'y_val': data['y_val'],
+        'y_test': data['y_test'],
+        'source_names': data.get('source_aliases'),
+    }
+    source_dims = []
+    for idx in source_indices:
+        data_dict[f'X{idx}_train'] = data[f's{idx}_train']
+        data_dict[f'X{idx}_val'] = data[f's{idx}_val']
+        data_dict[f'X{idx}_test'] = data[f's{idx}_test']
+        source_dims.append(data[f's{idx}_train'].shape[1])
+
+    return data_dict, source_indices, source_dims
+
+
 # ============================================
 # 训练器类
 # ============================================
@@ -369,29 +405,15 @@ class Trainer:
         self.optimizer.zero_grad()
 
         for batch_idx, batch in enumerate(self.train_loader):
-            # 解包数据
-            if len(batch) == 3:
-                # 多源数据
-                source1, source2, labels = batch
-                source1 = source1.to(self.device)
-                source2 = source2.to(self.device)
-                labels = labels.to(self.device)
+            features, labels = _split_batch(batch, self.device)
 
-                # 前向传播
-                with autocast(device_type=self.amp_device_type, enabled=self.use_amp):
-                    outputs, _ = self.model(source1, source2)
-                    loss = self.criterion(outputs, labels)
-                    loss = loss / self.gradient_accumulation_steps
-            else:
-                # 单源数据
-                features, labels = batch
-                features = features.to(self.device)
-                labels = labels.to(self.device)
-
-                with autocast(device_type=self.amp_device_type, enabled=self.use_amp):
-                    outputs = self.model(features)
-                    loss = self.criterion(outputs, labels)
-                    loss = loss / self.gradient_accumulation_steps
+            with autocast(device_type=self.amp_device_type, enabled=self.use_amp):
+                if len(features) == 1:
+                    outputs = self.model(features[0])
+                else:
+                    outputs, _ = self.model(*features)
+                loss = self.criterion(outputs, labels)
+                loss = loss / self.gradient_accumulation_steps
 
             # 反向传播
             if self.scaler is not None:
@@ -449,19 +471,11 @@ class Trainer:
 
         with torch.no_grad():
             for batch in self.val_loader:
-                if len(batch) == 3:
-                    source1, source2, labels = batch
-                    source1 = source1.to(self.device)
-                    source2 = source2.to(self.device)
-                    labels = labels.to(self.device)
-
-                    outputs, _ = self.model(source1, source2)
+                features, labels = _split_batch(batch, self.device)
+                if len(features) == 1:
+                    outputs = self.model(features[0])
                 else:
-                    features, labels = batch
-                    features = features.to(self.device)
-                    labels = labels.to(self.device)
-
-                    outputs = self.model(features)
+                    outputs, _ = self.model(*features)
 
                 loss = self.criterion(outputs, labels)
 
@@ -636,19 +650,11 @@ class Trainer:
 
         with torch.no_grad():
             for batch in data_loader:
-                if len(batch) == 3:
-                    source1, source2, labels = batch
-                    source1 = source1.to(self.device)
-                    source2 = source2.to(self.device)
-                    labels = labels.to(self.device)
-
-                    outputs, _ = self.model(source1, source2)
+                features, labels = _split_batch(batch, self.device)
+                if len(features) == 1:
+                    outputs = self.model(features[0])
                 else:
-                    features, labels = batch
-                    features = features.to(self.device)
-                    labels = labels.to(self.device)
-
-                    outputs = self.model(features)
+                    outputs, _ = self.model(*features)
 
                 loss = self.criterion(outputs, labels)
 
@@ -721,10 +727,10 @@ class AblationStudy:
         # 创建模型
         model = create_model(
             model_type=model_config.get('type', 'fusion_net'),
-            traffic_dim=config['model']['source1_dim'],
-            log_dim=config['model']['source2_dim'],
+            traffic_dim=config['model']['source_dims'][0],
+            log_dim=config['model']['source_dims'][1] if len(config['model']['source_dims']) > 1 else None,
             num_classes=config['model']['num_classes'],
-            config=model_config
+            config={**model_config, 'source_dims': config['model']['source_dims']}
         )
 
         # 设置日志
@@ -841,16 +847,13 @@ def main():
         data = pickle.load(f)
 
     # 更新配置
-    config['model']['source1_dim'] = data.get('source1_dim', data['s1_train'].shape[1])
-    config['model']['source2_dim'] = data.get('source2_dim', data['s2_train'].shape[1])
+    data_dict, _, source_dims = _build_multi_source_dict(data)
+    config['model']['source_dims'] = source_dims
+    if source_dims:
+        config['model']['source1_dim'] = source_dims[0]
+    if len(source_dims) > 1:
+        config['model']['source2_dim'] = source_dims[1]
     config['model']['num_classes'] = data.get('num_classes', len(np.unique(data['y_train'])))
-
-    # 创建数据加载器
-    data_dict = {
-        'X1_train': data['s1_train'], 'X1_val': data['s1_val'], 'X1_test': data['s1_test'],
-        'X2_train': data['s2_train'], 'X2_val': data['s2_val'], 'X2_test': data['s2_test'],
-        'y_train': data['y_train'], 'y_val': data['y_val'], 'y_test': data['y_test']
-    }
 
     loaders = create_multi_source_loaders(
         data_dict,
@@ -896,10 +899,15 @@ def main():
         model_config = config.get('model', {})
         model = create_model(
             model_type=model_config.get('type', 'fusion_net'),
-            traffic_dim=config['model']['source1_dim'],
-            log_dim=config['model']['source2_dim'],
+            traffic_dim=config['model']['source_dims'][0],
+            log_dim=config['model']['source_dims'][1] if len(config['model']['source_dims']) > 1 else None,
             num_classes=config['model']['num_classes'],
-            config=model_config.get('architecture', {})
+            config={
+                **model_config.get('architecture', {}),
+                'fusion_type': model_config.get('fusion', {}).get('method', 'attention'),
+                'num_heads': model_config.get('fusion', {}).get('attention_heads', 4),
+                'source_dims': config['model']['source_dims'],
+            }
         )
 
         logger.info(f"Model: {model_config.get('type', 'fusion_net')}")
