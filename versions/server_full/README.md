@@ -1,32 +1,37 @@
 # Server Full Version
 
-This folder is the entry point for the server-scale three-source training workflow.
+本目录用于服务器全量训练版本。
 
-Purpose:
-- Train with full datasets on server hardware
-- Use real logs when available
-- Use full threat-intelligence enrichment
+目标：
+- 使用服务器算力执行三源全量训练
+- 接入真实日志文件
+- 使用完整威胁情报富化
 
-Config used:
+使用配置：
 - `src/config/config_server.yaml`
 
-Recommended flow:
+建议执行顺序：
 
 ```bash
-python download_datasets.py --dataset threat_intel
-python main.py --data_dir data/raw/CIC-IDS-2017 --mode preprocess --config src/config/config_server.yaml
-python main.py --mode train --config src/config/config_server.yaml
-python main.py --mode evaluate --config src/config/config_server.yaml --experiment <exp_name>
-python main.py --mode report --config src/config/config_server.yaml --experiment <exp_name>
+bash versions/server_full/bootstrap_server.sh
+bash versions/server_full/run_preprocess.sh /path/to/CIC-IDS-2017 /path/to/security_logs.csv
+bash versions/server_full/run_train.sh
+bash versions/server_full/run_evaluate.sh <exp_name>
+bash versions/server_full/run_report.sh <exp_name>
 ```
 
-If you have real log data:
-- Set `data.logs.path` in `src/config/config_server.yaml`
-- Keep `data.logs.enabled: true`
-- Keep `data.logs.generate_synthetic_if_missing: false`
+如果日志文件暂时缺失：
+- 服务器版默认 `generate_synthetic_if_missing: false`
+- 不建议在正式实验中使用合成日志
+- 可以先把 `data.logs.enabled` 设为 `false`，只保留流量 + CTI
 
-Expected outputs:
+真实日志要求：
+- 参考 `versions/server_full/LOG_SCHEMA.md`
+- 至少建议包含 `timestamp/source_ip/destination_ip/event_type/severity/action`
+
+产物位置：
 - `data/processed/`
 - `outputs/exp_*/`
 
-This version is intended for the later server rollout, not the local smoke test.
+说明：
+- 本目录偏向正式训练流程，不用于本地冒烟测试。
