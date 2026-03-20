@@ -9,6 +9,7 @@
 
 使用配置：
 - `src/config/config_server.yaml`
+- 完整落地清单：`versions/server_full/SERVER_CHECKLIST.md`
 
 建议执行顺序：
 
@@ -19,6 +20,19 @@ bash versions/server_full/run_train.sh
 bash versions/server_full/run_evaluate.sh <exp_name>
 bash versions/server_full/run_report.sh <exp_name>
 ```
+
+一键预处理 + 训练：
+
+```bash
+bash versions/server_full/run_server_full.sh /path/to/CIC-IDS-2017 /path/to/security_logs.csv
+```
+
+脚本参数说明：
+- `run_preprocess.sh <traffic_dir> [logs_csv] [config_path]`
+- `run_train.sh [config_path]`
+- `run_evaluate.sh <exp_name> [config_path]`
+- `run_report.sh <exp_name> [config_path]`
+- `run_server_full.sh <traffic_dir> [logs_csv] [config_path]`
 
 如果日志文件暂时缺失：
 - 服务器版默认 `generate_synthetic_if_missing: false`
