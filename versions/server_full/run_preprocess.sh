@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "${PROJECT_ROOT}"
 
-DATA_DIR="${1:-data/raw/CIC-IDS-2017}"
+DATA_DIR="${1:-server_datasets/raw/CIC-IDS-2017}"
 LOGS_PATH="${2:-}"
 CONFIG="${3:-src/config/config_server.yaml}"
 

@@ -22,14 +22,15 @@ cd /path/to/huanjing
 ### Minimum required
 
 - Traffic dataset directory
-  Recommended first choice: `CIC-IDS-2017`
+  The bootstrap script now downloads `CIC-IDS-2017` automatically
 - Threat-intelligence bundle
-  Do not prepare manually first; bootstrap script downloads it
+  The bootstrap script also downloads it automatically
 
 ### Recommended for true three-source training
 
 - A real security log CSV aligned with the traffic data time/IP space
 - Required fields are documented in `versions/server_full/LOG_SCHEMA.md`
+- The bootstrap script additionally downloads `CSE-CIC-IDS2018` as a reference dataset
 
 Important:
 - A traffic CSV split into two feature groups is not a real log source
@@ -39,12 +40,14 @@ Important:
 
 ```text
 huanjing/
-├─ data/
+├─ server_datasets/
 │  ├─ raw/
-│  │  └─ CIC-IDS-2017/
+│  │  ├─ CIC-IDS-2017/
+│  │  └─ CSE-CIC-IDS2018/
 │  ├─ logs/
 │  │  └─ security_logs.csv
 │  └─ threat_intel/
+├─ data/
 ├─ outputs/
 └─ versions/
 ```
@@ -55,7 +58,9 @@ huanjing/
 bash versions/server_full/bootstrap_server.sh
 ```
 
-This installs `requirements.txt` and downloads the threat-intelligence sources used by the project:
+This installs `requirements.txt` and downloads these assets into `server_datasets/`:
+- `CIC-IDS-2017`
+- `CSE-CIC-IDS2018`
 - `abuse.ch`
 - `Emerging Threats`
 - `MITRE ATT&CK`
@@ -65,13 +70,13 @@ This installs `requirements.txt` and downloads the threat-intelligence sources u
 With real logs:
 
 ```bash
-bash versions/server_full/run_preprocess.sh /path/to/CIC-IDS-2017 /path/to/security_logs.csv
+bash versions/server_full/run_preprocess.sh server_datasets/raw/CIC-IDS-2017 server_datasets/logs/security_logs.csv
 ```
 
 Without logs for a temporary run:
 
 ```bash
-bash versions/server_full/run_preprocess.sh /path/to/CIC-IDS-2017
+bash versions/server_full/run_preprocess.sh server_datasets/raw/CIC-IDS-2017
 ```
 
 If you run without logs, either:
@@ -98,7 +103,7 @@ bash versions/server_full/run_report.sh <exp_name>
 If you want preprocessing + training in one go:
 
 ```bash
-bash versions/server_full/run_server_full.sh /path/to/CIC-IDS-2017 /path/to/security_logs.csv
+bash versions/server_full/run_server_full.sh server_datasets/raw/CIC-IDS-2017 server_datasets/logs/security_logs.csv
 ```
 
 ## 10. Before formal full training
@@ -107,8 +112,8 @@ Check these items:
 
 - `src/config/config_server.yaml` batch size matches GPU memory
 - `data.logs.path` is set by `--logs_path` or manually in config
-- Raw traffic path exists on the server
-- Threat-intel files exist under `data/threat_intel/`
+- Raw traffic path exists under `server_datasets/raw/`
+- Threat-intel files exist under `server_datasets/threat_intel/`
 - Processed outputs are written under `data/processed/`
 
 ## 11. Expected outputs

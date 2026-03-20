@@ -13,40 +13,40 @@ project:
 # ============================================
 data:
   # 数据路径 - 请根据服务器实际路径修改
-  raw_dir: "data/raw"
+  raw_dir: "server_datasets/raw"
   processed_dir: "data/processed"
-  log_dir: "data/logs"
+  log_dir: "server_datasets/logs"
 
   # 多机构数据源（路径与 download_datasets.py 下载目录一致）
   institutional_sources:
     - name: "CSE-CIC-IDS2018"
       institution: "CIC + CSE (University of New Brunswick)"
       enabled: true
-      path: "data/raw/CSE-CIC-IDS2018"
+      path: "server_datasets/raw/CSE-CIC-IDS2018"
     - name: "UNSW-NB15"
       institution: "UNSW Canberra"
-      enabled: true
-      path: "data/raw/UNSW-NB15"
+      enabled: false
+      path: "server_datasets/raw/UNSW-NB15"
     - name: "KDD-Cup-99"
       institution: "UCI / MIT Lincoln Labs"
-      enabled: true
-      path: "data/raw/KDD-Cup-99"
+      enabled: false
+      path: "server_datasets/raw/KDD-Cup-99"
 
   # 威胁情报数据路径
   threat_intel:
     enabled: true
-    dir: "data/threat_intel"
+    dir: "server_datasets/threat_intel"
     sources:
       - name: "abuse_ch"
         type: "ip_reputation"
-        path: "data/threat_intel/abuse_ch"
+        path: "server_datasets/threat_intel/abuse_ch"
       - name: "emerging_threats"
         type: "signature"
-        path: "data/threat_intel/emerging_threats"
+        path: "server_datasets/threat_intel/emerging_threats"
       - name: "mitre_attack"
         type: "attack_pattern"
-        path: "data/threat_intel/mitre_attack"
-    feature_mapping: "data/threat_intel/threat_intel_features.json"
+        path: "server_datasets/threat_intel/mitre_attack"
+    feature_mapping: "server_datasets/threat_intel/threat_intel_features.json"
 
   # 真实日志配置
   logs:

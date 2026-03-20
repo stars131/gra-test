@@ -55,14 +55,34 @@ RAW_DIR = DATA_DIR / "raw"
 THREAT_DIR = DATA_DIR / "threat_intel"
 
 # 各数据集子目录
-DATASET_DIRS = {
-    "cicids2017": RAW_DIR / "CIC-IDS-2017",
-    "local_sample": RAW_DIR / "CIC-IDS-2017-local-sample",
-    "cse2018": RAW_DIR / "CSE-CIC-IDS2018",
-    "unsw": RAW_DIR / "UNSW-NB15",
-    "kddcup": RAW_DIR / "KDD-Cup-99",
-    "threat_intel": THREAT_DIR,
-}
+def _build_dataset_dirs(base_dir: Path):
+    raw_dir = base_dir / "raw"
+    threat_dir = base_dir / "threat_intel"
+    return {
+        "cicids2017": raw_dir / "CIC-IDS-2017",
+        "local_sample": raw_dir / "CIC-IDS-2017-local-sample",
+        "cse2018": raw_dir / "CSE-CIC-IDS2018",
+        "unsw": raw_dir / "UNSW-NB15",
+        "kddcup": raw_dir / "KDD-Cup-99",
+        "threat_intel": threat_dir,
+    }
+
+
+DATASET_DIRS = _build_dataset_dirs(DATA_DIR)
+
+
+def configure_data_root(base_dir):
+    global DATA_DIR, RAW_DIR, THREAT_DIR, DATASET_DIRS
+
+    if base_dir:
+        DATA_DIR = (PROJECT_ROOT / base_dir).resolve()
+    else:
+        DATA_DIR = PROJECT_ROOT / "data"
+
+    RAW_DIR = DATA_DIR / "raw"
+    THREAT_DIR = DATA_DIR / "threat_intel"
+    DATASET_DIRS = _build_dataset_dirs(DATA_DIR)
+    return DATA_DIR
 
 # ============================================================
 # 工具函数
@@ -404,6 +424,33 @@ def download_local_sample_bundle():
 
     download_threat_intel()
     _check_dir_result(out_dir)
+
+
+def download_server_bundle():
+    """Download the default server bundle into one project-local directory."""
+    print("\n" + "=" * 60)
+    print("  Server bundle")
+    print("  Includes: CIC-IDS-2017 + CSE-CIC-IDS2018 + Threat Intel")
+    print("  Purpose: server bootstrap for traffic dataset, log-reference dataset, and CTI")
+    print("=" * 60)
+
+    download_cicids2017()
+    download_cse2018()
+    download_threat_intel()
+
+    logs_dir = DATA_DIR / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    readme_path = logs_dir / "README.txt"
+    if not readme_path.exists():
+        readme_path.write_text(
+            "Put your real aligned security log CSV in this folder.\n"
+            "Recommended path:\n"
+            f"  {logs_dir / 'security_logs.csv'}\n\n"
+            "The downloaded CSE-CIC-IDS2018 files are kept under raw/ as a reference dataset.\n"
+            "For true three-source training, provide a real log CSV aligned with your traffic data.\n",
+            encoding="utf-8",
+        )
+        print(f"  [INFO] Created {readme_path}")
 
 
 def _generate_cic_like_local_sample(output_path, rows=5000, random_state=42):
@@ -912,7 +959,14 @@ def main():
     )
     parser.add_argument("--list", "-l", action="store_true", help="列出所有数据集信息")
 
+    parser.add_argument(
+        "--base_dir",
+        default="data",
+        help="download root relative to project root",
+    )
+
     args = parser.parse_args()
+    configure_data_root(args.base_dir)
 
     print("=" * 60)
     print("  多源数据融合 — 数据集自动下载工具")
